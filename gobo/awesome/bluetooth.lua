@@ -15,6 +15,9 @@ local cairo = lgi.require("cairo")
 -- Global state
 --------------------------------------------------------------------------------
 
+local BLUETOOTHCTL_SLOW = "pidof bluetoothd &>/dev/null && bluetoothctl --timeout 5"
+local BLUETOOTHCTL_FAST = "pidof bluetoothd &>/dev/null && bluetoothctl"
+
 local bt_controllers
 local bt_controller -- default bt controller
 
@@ -85,7 +88,7 @@ local run = awful.spawn and awful.spawn.with_shell or awful.util.spawn_with_shel
 --------------------------------------------------------------------------------
 
 local function get_bt_controllers()
-   local data = pread("bluetoothctl list")
+   local data = pread(BLUETOOTHCTL_FAST .. " list")
    local items = {}
    for mac, rest in data:gmatch("Controller ([^%s]+)( [^\n]*)\n") do
       local item = { mac = mac }
@@ -99,7 +102,7 @@ local function get_bt_controllers()
 end
 
 local function get_bt_status()
-   local data = pread("bluetoothctl show " .. bt_controller.mac)
+   local data = pread(BLUETOOTHCTL_FAST .. " show " .. bt_controller.mac)
    local info = {}
    for k,v in data:gmatch("\n%s*([^:]*): ([^\n]*)") do
       info[k:lower()] = v
@@ -108,7 +111,7 @@ local function get_bt_status()
 end
 
 local function get_bt_info(device)
-   local data = pread("bluetoothctl info " .. device)
+   local data = pread(BLUETOOTHCTL_FAST .. " info " .. device)
    local info = {}
    for k,v in data:gmatch("\n%s*([^:]*): ([^\n]*)") do
       info[k:lower()] = v
@@ -145,6 +148,11 @@ function bluetooth.new()
    local widget = wibox.widget.imagebox()
    local menu
    local menu_fn
+   
+   local bluetoothd_running = pread("pidof bluetoothd")
+   if bluetoothd_running == "" then
+      return widget
+   end
 
    bt_controllers = get_bt_controllers()
 
@@ -212,18 +220,18 @@ function bluetooth.new()
       end
    end
    
-   local rescan = animated_operation { command = "bluetoothctl --timeout 5 scan on", popup_menu_when_done = true }
+   local rescan = animated_operation { command = BLUETOOTHCTL_SLOW .. " scan on", popup_menu_when_done = true }
 
    local function pair(device)
-      return animated_operation { command = "bluetoothctl pair " .. device .. "; bluetoothctl trust " .. device } ()
+      return animated_operation { command =  BLUETOOTHCTL_SLOW .. " pair " .. device .. "; bluetoothctl trust " .. device } ()
    end
 
    local function connect(device)
-      return animated_operation { command = "bluetoothctl connect " .. device } ()
+      return animated_operation { command =  BLUETOOTHCTL_SLOW .. " connect " .. device } ()
    end
 
    local function disconnect(device)
-      return animated_operation { command = "bluetoothctl disconnect " .. device } ()
+      return animated_operation { command =  BLUETOOTHCTL_SLOW .. " disconnect " .. device } ()
    end
    
    local status = {}
@@ -241,6 +249,14 @@ function bluetooth.new()
          update_icon(widget, 50)
       end
    end
+
+   local function set_entries_size(entries)
+      local len = 10
+      for _, entry in ipairs(entries) do
+         len = math.max(len, (#entry[1] + 1) * 10 )
+      end
+      entries.theme = { height = 24, width = len }
+   end
    
    local coords
    menu_fn = function(auto_popped)
@@ -257,22 +273,27 @@ function bluetooth.new()
          end
       end
       
+      if not next(status) then
+         local entries = {{ "No Bluetooth info", function() end }}
+         set_entries_size(entries)
+         menu = awful.menu.new(entries)
+         menu:show({ coords = coords })
+         return
+      end
+      
       local entries = {}
       table.insert(entries, { "Powered", function()
-         run("bluetoothctl power " .. (status.powered == "yes" and "off" or "on"))
+         run(BLUETOOTHCTL_FAST .. " power " .. (status.powered == "yes" and "off" or "on"))
       end, status.powered == "yes" and beautiful.check_icon or nil })
       table.insert(entries, { "Pairable", function()
-         run("bluetoothctl pairable " .. (status.pairable == "yes" and "off" or "on"))
+         run(BLUETOOTHCTL_FAST .. " pairable " .. (status.pairable == "yes" and "off" or "on"))
       end, status.pairable == "yes" and beautiful.check_icon or nil })
       table.insert(entries, { "Discoverable", function()
-         run("bluetoothctl discoverable " .. (status.discoverable == "yes" and "off" or "on"))
+         run(BLUETOOTHCTL_FAST .. " discoverable " .. (status.discoverable == "yes" and "off" or "on"))
       end, status.discoverable == "yes" and beautiful.check_icon or nil })
 
       local devices = {}
-      local scan = ""
-      --if not is_scanning() then
-         scan = pread("bluetoothctl devices")
-      --end
+      local scan = pread(BLUETOOTHCTL_FAST .. " devices")
       for mac, _ in scan:gmatch("Device ([^%s]*) ([^\n]*)") do
          devices[mac] = get_bt_info(mac)
          devices[mac].mac = mac
@@ -293,13 +314,13 @@ function bluetooth.new()
          return a.name:lower() > b.name:lower()
       end)
       
-      local function status(d, connected, paired, other)
+      local function state(d, connected, paired, other)
          return d.connected == "yes" and connected or (d.paired == "yes" and paired or other)
       end
       
       for _, d in ipairs(devices_array) do
          table.insert(entries, {
-            (d.name .. status(d, " (connected)", " (paired)", "")):gsub(" +", " "),
+            (d.name .. state(d, " (connected)", " (paired)", "")):gsub(" +", " "),
             function()
                if d.paired == "no" or d.trusted == "no" then
                   pair(d.mac)
@@ -311,7 +332,7 @@ function bluetooth.new()
                   end
                end
             end,
-            get_icon(status(d, 100, 60, 30)),
+            get_icon(state(d, 100, 60, 30)),
          })
       end
 
@@ -324,11 +345,7 @@ function bluetooth.new()
          table.insert(entries, { " Rescan", function() is_scanning = rescan() end } )
       end
 
-      local len = 10
-      for _, entry in ipairs(entries) do
-         len = math.max(len, (#entry[1] + 1) * 10 )
-      end
-      entries.theme = { height = 24, width = len }
+      set_entries_size(entries)
       compact_entries(entries)
       menu = awful.menu.new(entries)
       menu:show({ coords = coords })
