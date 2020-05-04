@@ -15,7 +15,7 @@ local cairo = lgi.require("cairo")
 -- Global state
 --------------------------------------------------------------------------------
 
-local BLUETOOTHCTL_SLOW = "pidof bluetoothd &>/dev/null && bluetoothctl --timeout 5"
+local BLUETOOTHCTL_SLOW = "bluetoothctl --timeout 5"
 local BLUETOOTHCTL_FAST = "pidof bluetoothd &>/dev/null && bluetoothctl"
 
 local bt_controllers
@@ -175,7 +175,9 @@ function bluetooth.new()
       if not cmd then return end
       local waiting
       local is_waiting = function()
-         if not waiting then return false end
+         if not waiting then
+            return false
+         end
          if waiting() ~= true then
             return true
          end
